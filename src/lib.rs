@@ -64,8 +64,8 @@ pub fn read_array<'a, T: Pod>(input: &'a [u8]) -> &'a [T] {
 
 /// Read a string from `input`. The string must be a null-termianted utf8 string.
 /// Note that an ascii C string fulfils this requirement.
-pub fn read_str<'a>(input: &'a [u8]) -> &'a str {
-    from_utf8(read_str_bytes(input)).expect("Non-utf8 string")
+pub fn read_str<'a>(input: &'a [u8]) -> Result<&'a str, &'static str> {
+    read_str_bytes(input).and_then(|bytes| from_utf8(bytes).map_err(|_err| "Non-UTF-8 string"))
 }
 
 /// Returns an iterator which will return a sequence of strings from `input`.
@@ -120,8 +120,8 @@ pub unsafe fn read_array_unsafe<'a, T: Sized>(input: &'a [u8]) -> &'a [T] {
 }
 
 /// Reads a null-terminated string from `input` with no checks.
-pub unsafe fn read_str_unsafe<'a>(input: &'a [u8]) -> &'a str {
-    from_utf8_unchecked(read_str_bytes(input))
+pub unsafe fn read_str_unsafe<'a>(input: &'a [u8]) -> Result<&'a str, &'static str> {
+    read_str_bytes(input).map(|bytes| from_utf8_unchecked(bytes))
 }
 
 /// Iterates over `self.data`, yielding strings (null-terminated in `self.data`).
@@ -139,9 +139,13 @@ impl<'a> Iterator for StrReaderIterator<'a> {
             return None;
         }
 
-        let result = read_str(self.data);
-        self.data = &self.data[result.len() + 1..];
-        Some(result)
+        match read_str(self.data) {
+            Ok(result) => {
+                self.data = &self.data[result.len() + 1..];
+                Some(result)
+            }
+            Err(_err) => None,
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -154,14 +158,14 @@ impl<'a> Iterator for StrReaderIterator<'a> {
 // Helper function for read_str and read_str_unsafe.
 // Finds the sub-slice of input which contains a string by searching for a null
 // byte.
-fn read_str_bytes<'a>(input: &'a [u8]) -> &'a [u8] {
+fn read_str_bytes<'a>(input: &'a [u8]) -> Result<&'a [u8], &'static str> {
     for (i, byte) in input.iter().enumerate() {
         if *byte == 0 {
-            return &input[..i];
+            return Ok(&input[..i]);
         }
     }
 
-    panic!("No null byte in input");
+    Err("No null byte in input")
 }
 
 #[cfg(test)]
@@ -269,25 +273,23 @@ mod test {
     #[test]
     fn test_good_strs() {
         let a = &[0];
-        assert_eq!(read_str(a), "");
+        assert_eq!(read_str(a), Ok(""));
         let a = &[0x61, 0];
-        assert_eq!(read_str(a), "a");
+        assert_eq!(read_str(a), Ok("a"));
         let a = &[0x61, 0x41, 0x7a, 0, 0x61];
-        assert_eq!(read_str(a), "aAz");
+        assert_eq!(read_str(a), Ok("aAz"));
     }
 
     #[test]
-    #[should_panic]
     fn test_no_null() {
         let a = &[];
-        read_str(a);
+        assert!(read_str(a).is_err());
     }
 
     #[test]
-    #[should_panic]
     fn test_no_null2() {
         let a = &[0x61, 0x41, 0x7a];
-        read_str(a);
+        assert!(read_str(a).is_err());
     }
 
     #[test]
@@ -329,10 +331,9 @@ mod test {
     }
 
     #[test]
-    #[should_panic]
     fn test_no_null_to_null() {
         let a = &[0x61];
         let mut iter = read_strs_to_null(a);
-        iter.next();
+        assert!(iter.next().is_none());
     }
 }
